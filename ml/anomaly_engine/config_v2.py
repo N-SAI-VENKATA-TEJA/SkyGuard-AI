@@ -1,0 +1,38 @@
+# Configuration for Step 6 V2: Fault-Family Hybrid Anomaly Engine
+
+# Evidence caps and bounds
+MODEL_SUPPORT_CAP = 0.20
+EVIDENCE_AGREEMENT_THRESHOLD = 0.30
+AGREEMENT_BONUS_WEIGHT = 0.10
+
+# Contextual suppression
+COHERENT_MULTIVARIATE_THRESHOLD = 2.0  # z-disagreement below this is considered "coherent"
+CONTEXT_SUPPRESSION_FACTOR = 0.50
+
+# Threshold selection logic
+THRESHOLD_PERCENTILE = 99.5
+
+# Fault Families
+FAMILY_SUDDEN = "SUDDEN_EVENT"
+FAMILY_PERSISTENT = "PERSISTENT_SENSOR_FAULT"
+FAMILY_COMM = "DATA_LOSS_COMMUNICATION"
+FAMILY_NORMAL = "NORMAL"
+
+# Fault Hints
+HINT_SPIKE = "SPIKE"
+HINT_DRIFT = "DRIFT"
+HINT_FROZEN = "FROZEN"
+HINT_OFFSET = "OFFSET"
+HINT_NOISE = "NOISE"
+HINT_MISSING = "MISSING"
+HINT_MULTI = "MULTIVARIATE_INCONSISTENCY"
+HINT_UNKNOWN = "UNKNOWN"
+
+# Severity mapping based on anomaly score
+SEVERITY_MAPPING = [
+    (0.00, 0.50, "NORMAL"),
+    (0.50, 0.70, "LOW"),
+    (0.70, 0.85, "MEDIUM"),
+    (0.85, 0.95, "HIGH"),
+    (0.95, 1.01, "CRITICAL")
+]

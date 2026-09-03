@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environment
+.env
+venv/
+env/
+.venv/
+
+# IDEs
+.vscode/
+.idea/
+
+# Data
+# Exclude raw and processed datasets but you can keep small samples or structure if needed
+data/raw/*.csv
+data/processed/*.csv
+
+# Ignore logs
+*.log
