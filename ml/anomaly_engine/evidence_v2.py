@@ -50,23 +50,37 @@ def extract_stability_evidence(df: pd.DataFrame) -> np.ndarray:
     return robust_bound(max_stab, k=6.0)
 
 def extract_drift_evidence(df: pd.DataFrame) -> np.ndarray:
-    # A persistent offset or slow drift will manifest as a sustained baseline deviation
-    # In Step 4 we created _roll_mean_6h or similar, but for drift we can use 
-    # the deviation from a 6-hour or 24-hour baseline. Let's use 24h if available, else 6h.
-    # Actually, we have rolling z-scores over 6h or 24h. Let's use 24h deviation if it exists.
-    drift_cands = []
+    """
+    Detect gradual calibration drift by comparing short-term (60m) rolling mean
+    against longer-term (360m) rolling mean. A divergence indicates the sensor
+    has drifted from its historical baseline.
+    """
+    n = len(df)
+    drift_signals = []
+
     for s in ['temperature', 'pressure', 'humidity']:
-        if f"{s}_diff_roll_mean_24h" in df.columns:
-            drift_cands.append(f"{s}_diff_roll_mean_24h")
-        elif f"{s}_diff_roll_mean_6h" in df.columns:
-            drift_cands.append(f"{s}_diff_roll_mean_6h")
-            
-    if not drift_cands:
-        return np.zeros(len(df))
-        
-    max_drift = df[drift_cands].abs().fillna(0).max(axis=1).values
-    # Drift typically happens slowly. A deviation of 3-5 units over a day is high.
-    return robust_bound(max_drift, k=5.0)
+        # Primary: short-term vs long-term rolling mean divergence
+        col_60m = f'{s}_roll_mean_60m'
+        col_360m = f'{s}_roll_mean_360m'
+        if col_60m in df.columns and col_360m in df.columns:
+            divergence = (df[col_60m] - df[col_360m]).abs().fillna(0).values
+            drift_signals.append(divergence)
+
+        # Secondary: fallback to legacy diff columns if they exist
+        for suffix in ['_diff_roll_mean_24h', '_diff_roll_mean_6h']:
+            col = f'{s}{suffix}'
+            if col in df.columns:
+                drift_signals.append(df[col].abs().fillna(0).values)
+                break
+
+    if not drift_signals:
+        return np.zeros(n)
+
+    # Combine: take the max signal across all sensors and signal types
+    stacked = np.column_stack(drift_signals)
+    max_drift = np.nanmax(stacked, axis=1)
+    # k=3.5: compromise between old 5.0 (too lenient) and 2.0 (too aggressive)
+    return robust_bound(max_drift, k=3.5)
 
 def extract_missing_evidence(df: pd.DataFrame):
     # Returns binary indicators, not a continuous [0,1] bounded score

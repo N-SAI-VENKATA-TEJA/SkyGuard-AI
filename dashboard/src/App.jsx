@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Activity, Thermometer, Gauge, Droplets, AlertTriangle, CheckCircle, Wifi, WifiOff, RefreshCw } from 'lucide-react';
+import { Activity, Thermometer, Gauge, Droplets, AlertTriangle, CheckCircle, Wifi, WifiOff, Play } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 // Limit historical points for charts and events
@@ -12,6 +12,7 @@ function App() {
   const [currentData, setCurrentData] = useState(null);
   const [historyData, setHistoryData] = useState([]);
   const [events, setEvents] = useState([]);
+  const [demoStatus, setDemoStatus] = useState('idle'); // idle, running
   
   const wsRef = useRef(null);
 
@@ -62,7 +63,9 @@ function App() {
               sensor: data.affected_sensor,
               severity: data.severity,
               confidence: data.confidence,
-              explanation: data.explanation
+              explanation: data.explanation,
+              shap_features: data.shap_top_features || [],
+              suggested_corrections: data.suggested_corrections || null
             };
             const next = [newEvent, ...prev];
             if (next.length > MAX_EVENTS) return next.slice(0, MAX_EVENTS);
@@ -94,6 +97,29 @@ function App() {
     };
   }, [stationId]);
 
+  // Demo Handler
+  const startDemo = async () => {
+    setDemoStatus('running');
+    // Reset dashboard state for fresh demo
+    setCurrentData(null);
+    setHistoryData([]);
+    setEvents([]);
+    
+    try {
+      const res = await fetch(`http://127.0.0.1:8000/api/v1/demo/start?station_id=${stationId}`, {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (data.status === 'already_running') {
+        // Already running, just wait
+      }
+      // Demo will auto-complete after ~50 seconds
+      setTimeout(() => setDemoStatus('idle'), 55000);
+    } catch (e) {
+      setDemoStatus('idle');
+    }
+  };
+
   // Render Helpers
   const renderHealthScore = (score, status) => {
     let color = 'var(--status-normal)';
@@ -106,6 +132,20 @@ function App() {
           {score ? score.toFixed(0) : '—'}
         </div>
         <div style={{ color, fontWeight: 600 }}>{status || 'UNKNOWN'}</div>
+      </div>
+    );
+  };
+
+  const renderShapFeatures = (features) => {
+    if (!features || features.length === 0) return null;
+    return (
+      <div className="shap-features">
+        <span className="shap-label">XAI Features:</span>
+        {features.map((f, idx) => (
+          <span key={idx} className="shap-chip">
+            {f.feature.replace(/_/g, ' ')} ({f.contribution > 0 ? '+' : ''}{f.contribution.toFixed(3)})
+          </span>
+        ))}
       </div>
     );
   };
@@ -129,6 +169,15 @@ function App() {
             <option value="AWS_DEMO_01">AWS_DEMO_01</option>
             <option value="AWS_002">AWS_002 (Simulated)</option>
           </select>
+
+          <button
+            className={`demo-btn ${demoStatus === 'running' ? 'running' : ''}`}
+            onClick={startDemo}
+            disabled={demoStatus === 'running'}
+          >
+            <Play size={14} />
+            {demoStatus === 'running' ? 'Demo Running...' : 'Run Demo'}
+          </button>
 
           <div className={`connection-badge ${connectionStatus}`}>
             <div className="status-dot"></div>
@@ -177,6 +226,25 @@ function App() {
                 <span className="anomaly-stat-value">{currentData.processing_state}</span>
               </div>
             </div>
+
+            {/* SHAP Features for current observation */}
+            {currentData.anomaly_flag && currentData.shap_top_features && currentData.shap_top_features.length > 0 && (
+              <div style={{ marginTop: '1rem' }}>
+                {renderShapFeatures(currentData.shap_top_features)}
+              </div>
+            )}
+
+            {/* Suggested Corrections */}
+            {currentData.anomaly_flag && currentData.suggested_corrections && (
+              <div className="corrections-bar">
+                <span className="corrections-label">Suggested Corrections:</span>
+                {Object.entries(currentData.suggested_corrections).map(([sensor, val]) => (
+                  <span key={sensor} className="correction-chip">
+                    {sensor}: {val}
+                  </span>
+                ))}
+              </div>
+            )}
           </>
         ) : (
           <div style={{ color: 'var(--text-secondary)' }}>Waiting for data...</div>
@@ -188,19 +256,19 @@ function App() {
         <div className="panel">
           <div className="panel-title"><Thermometer size={18} color="var(--color-temp)"/> Temperature</div>
           <p className="metric-value" style={{color: 'var(--color-temp)'}}>
-            {currentData ? currentData.temperature.toFixed(2) : '—'} <span className="metric-unit">°C</span>
+            {currentData ? currentData.temperature?.toFixed(2) ?? '—' : '—'} <span className="metric-unit">°C</span>
           </p>
         </div>
         <div className="panel">
           <div className="panel-title"><Gauge size={18} color="var(--color-press)"/> Pressure</div>
           <p className="metric-value" style={{color: 'var(--color-press)'}}>
-            {currentData ? currentData.pressure.toFixed(2) : '—'} <span className="metric-unit">hPa</span>
+            {currentData ? currentData.pressure?.toFixed(2) ?? '—' : '—'} <span className="metric-unit">hPa</span>
           </p>
         </div>
         <div className="panel">
           <div className="panel-title"><Droplets size={18} color="var(--color-humid)"/> Humidity</div>
           <p className="metric-value" style={{color: 'var(--color-humid)'}}>
-            {currentData ? currentData.humidity.toFixed(2) : '—'} <span className="metric-unit">%</span>
+            {currentData ? currentData.humidity?.toFixed(2) ?? '—' : '—'} <span className="metric-unit">%</span>
           </p>
         </div>
       </div>
@@ -255,6 +323,15 @@ function App() {
                   <p className="event-desc" style={{marginTop: '0.25rem', fontSize: '0.75rem'}}>
                     Severity: <strong>{ev.severity}</strong> | Confidence: {(ev.confidence*100).toFixed(0)}%
                   </p>
+                  {renderShapFeatures(ev.shap_features)}
+                  {ev.suggested_corrections && (
+                    <div className="corrections-bar" style={{marginTop: '0.5rem'}}>
+                      <span className="corrections-label">Corrected:</span>
+                      {Object.entries(ev.suggested_corrections).map(([sensor, val]) => (
+                        <span key={sensor} className="correction-chip">{sensor}: {val}</span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))
             )}

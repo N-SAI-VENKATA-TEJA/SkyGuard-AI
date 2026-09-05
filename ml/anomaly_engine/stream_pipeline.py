@@ -1,7 +1,9 @@
 import os
 import joblib
 import pandas as pd
+import numpy as np
 import json
+import shap
 
 from ml.anomaly_engine.stream_feature_engineer import StreamFeatureEngineer
 from ml.anomaly_engine.step7_sensor_health import SensorHealthTracker
@@ -25,6 +27,61 @@ class StreamPipeline:
         self.feature_engineer = StreamFeatureEngineer()
         self.health_tracker = SensorHealthTracker()
         
+        # Initialize SHAP Explainer for Isolation Forest
+        # TreeExplainer works natively with sklearn IsolationForest
+        try:
+            self.shap_explainer = shap.TreeExplainer(self.if_model.model)
+        except Exception:
+            self.shap_explainer = None
+        
+    def _compute_shap_features(self, df_row: pd.DataFrame) -> list:
+        """Compute top-3 SHAP feature contributions for explainability."""
+        if self.shap_explainer is None:
+            return []
+        
+        try:
+            X_scaled = self.if_model.preprocessor.transform(df_row)
+            shap_values = self.shap_explainer.shap_values(X_scaled)
+            
+            # shap_values shape: (1, n_features) — get the single row
+            sv = shap_values[0]
+            
+            # Get feature names (exclude timestamp if present)
+            feature_names = [c for c in self.feature_cols if c != 'timestamp']
+            
+            # Match lengths (preprocessor may have dropped timestamp)
+            if len(sv) == len(feature_names):
+                indices = np.argsort(np.abs(sv))[::-1][:3]
+                return [
+                    {"feature": feature_names[i], "contribution": round(float(sv[i]), 4)}
+                    for i in indices
+                ]
+            elif len(sv) == len(self.feature_cols):
+                indices = np.argsort(np.abs(sv))[::-1][:3]
+                return [
+                    {"feature": self.feature_cols[i], "contribution": round(float(sv[i]), 4)}
+                    for i in indices
+                ]
+        except Exception:
+            pass
+        
+        return []
+    
+    def _compute_suggested_corrections(self) -> dict:
+        """Compute corrected values from rolling median of the history buffer."""
+        corrections = {}
+        history = self.feature_engineer.history
+        
+        if len(history) < 3:
+            return corrections
+            
+        for sensor in ['temperature', 'pressure', 'humidity']:
+            vals = [obs[sensor] for obs in history if not pd.isna(obs.get(sensor, np.nan))]
+            if vals:
+                corrections[sensor] = round(float(np.median(vals)), 2)
+                
+        return corrections
+        
     def process_observation(self, timestamp, temperature, pressure, humidity) -> dict:
         obs = {
             'timestamp': timestamp,
@@ -37,14 +94,9 @@ class StreamPipeline:
         features = self.feature_engineer.process_observation(obs)
         
         # Determine Warm-Up
-        # We need at least 60m of history to compute robust_z_60m correctly
-        # But even with less, pandas returns NaN and we compute properly.
-        # We define warm-up strictly as: do we have any rolling z-score yet?
-        # Actually, let's just see if temperature_roll_z_60m is NaN. 
-        # Wait, the prompt says "If Step 6 V2 cannot safely produce a valid prediction... return an explicit warm-up".
-        # Step 6 V2 relies heavily on robust_z_60m, roll_z_60m, etc.
-        # If they are NaN, the models will impute them (BaselinePreprocessor imputes with median).
-        is_warmup = len(self.feature_engineer.history) < 36
+        # Reduced from 36 (6 hours) to 12 (2 hours) for faster operational readiness.
+        # Basic fault detection (MISSING, FROZEN) still works during warmup.
+        is_warmup = len(self.feature_engineer.history) < 12
         
         # 2. Convert to DataFrame to pass to sklearn models
         # Ensure exact column ordering
@@ -71,15 +123,27 @@ class StreamPipeline:
         # Merge with raw features
         step7_input = {**features, **res_dict}
         
-        # If in warmup, we should NOT damage health.
-        # We can enforce this by forcing anomaly_flag = False during warmup.
+        # During warmup: allow MISSING and FROZEN detection, suppress everything else.
+        # This lets the system catch obvious faults even before full history is available.
         if is_warmup:
-            step7_input['anomaly_flag'] = False
-            step7_input['fault_type_hint'] = 'NORMAL'
+            fault_hint = step7_input.get('fault_type_hint', 'NORMAL')
+            if fault_hint not in ('MISSING', 'FROZEN'):
+                step7_input['anomaly_flag'] = False
+                step7_input['fault_type_hint'] = 'NORMAL'
             
         final_out = self.health_tracker.process_row(step7_input)
         
-        # 6. Format Result Contract
+        # 6. SHAP Explainability (compute only when anomaly is detected)
+        shap_top_features = []
+        if final_out['anomaly_flag'] and not is_warmup:
+            shap_top_features = self._compute_shap_features(df_row)
+        
+        # 7. Suggested Corrections (compute only when anomaly is detected)
+        suggested_corrections = None
+        if final_out['anomaly_flag']:
+            suggested_corrections = self._compute_suggested_corrections()
+        
+        # 8. Format Result Contract
         result = {
             'timestamp': str(timestamp),
             'temperature': temperature,
@@ -107,7 +171,10 @@ class StreamPipeline:
             'data_quality_status': final_out['data_quality_status'],
             
             'maintenance_status': final_out['maintenance_status'],
-            'explanation': final_out['fault_explanation']
+            'explanation': final_out['fault_explanation'],
+            
+            'shap_top_features': shap_top_features,
+            'suggested_corrections': suggested_corrections
         }
         
         return result

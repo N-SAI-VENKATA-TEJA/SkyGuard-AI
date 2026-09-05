@@ -1,6 +1,10 @@
 from pydantic import BaseModel, Field
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Dict
+
+class ShapFeature(BaseModel):
+    feature: str
+    contribution: float
 
 class ObservationRequest(BaseModel):
     station_id: str = Field(..., description="Unique identifier for the AWS station")
@@ -37,3 +41,9 @@ class ObservationResponse(BaseModel):
     data_quality_status: str
     maintenance_status: str
     explanation: str
+    
+    # Explainable AI: SHAP top contributing features
+    shap_top_features: Optional[List[ShapFeature]] = None
+    
+    # Corrected/imputed value suggestions
+    suggested_corrections: Optional[Dict[str, float]] = None
